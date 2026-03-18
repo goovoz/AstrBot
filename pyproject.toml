@@ -51,7 +51,7 @@ dependencies = [
   "watchfiles>=1.0.5",
   "websockets>=15.0.1",
   "wechatpy>=1.8.18",
-  "audioop-lts ; python_full_version >= '3.13'",
+  "audioop-lts ; python_full_version >= `'3.13`'",
   "click>=8.2.1",
   "pypdf>=6.1.1",
   "aiofiles>=25.1.0",
@@ -121,6 +121,9 @@ artifacts = ["astrbot/dashboard/dist/**"]
 # Custom build hook: builds the Vue dashboard and copies dist into the package.
 [tool.hatch.build.hooks.custom]
 path = "scripts/hatch_build.py"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["hatchling"]
