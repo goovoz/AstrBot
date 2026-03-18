@@ -1,0 +1,85 @@
+name: Sync Tags from Upstream Changelogs
+
+on:
+  schedule:
+    # Run every day at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync-tags:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout fork repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream tags and changelogs
+        run: |
+          # Add upstream remote
+          git remote add upstream https://github.com/AstrBotDevs/AstrBot.git
+          git fetch upstream --tags
+          git fetch upstream master
+
+      - name: Sync tags based on changelogs
+        run: |
+          # Get all changelog files from upstream
+          curl -s "https://api.github.com/repos/AstrBotDevs/AstrBot/contents/changelogs" | \
+            jq -r '.[].name | select(. | endswith(".md")) | rtrimstr(".md")' > /tmp/upstream_versions.txt
+          
+          echo "Upstream versions found:"
+          cat /tmp/upstream_versions.txt
+          
+          # Get existing tags in fork
+          git tag -l > /tmp/fork_tags.txt
+          
+          echo ""
+          echo "Fork existing tags:"
+          cat /tmp/fork_tags.txt
+          
+          # Find missing tags
+          missing_tags=""
+          while read version; do
+            if ! grep -q "^${version}$" /tmp/fork_tags.txt; then
+              missing_tags="${missing_tags} ${version}"
+            fi
+          done < /tmp/upstream_versions.txt
+          
+          echo ""
+          echo "Missing tags: ${missing_tags}"
+          
+          # Create missing tags
+          for tag in ${missing_tags}; do
+            echo "Creating tag: ${tag}"
+            
+            # Find the commit that added the changelog file
+            # First try to find in upstream
+            commit=$(git log upstream/master --all --oneline -- "changelogs/${tag}.md" | head -1 | awk '{print $1}')
+            
+            if [ -z "$commit" ]; then
+              echo "  Warning: Could not find commit for ${tag}, using upstream/master"
+              commit="upstream/master"
+            fi
+            
+            echo "  Tagging commit: ${commit}"
+            git tag -a "${tag}" "${commit}" -m "Sync ${tag} from upstream" || echo "  Tag ${tag} already exists or failed"
+          done
+          
+          # Push all tags
+          echo ""
+          echo "Pushing tags to fork..."
+          git push origin --tags
+
+      - name: Summary
+        run: |
+          echo "## Tag Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Checked upstream changelogs and synced missing tags." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tags in fork after sync:" >> $GITHUB_STEP_SUMMARY
+          git tag -l | sort -V | tail -20 >> $GITHUB_STEP_SUMMARY
