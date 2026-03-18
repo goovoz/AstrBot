@@ -13,73 +13,121 @@ jobs:
       contents: write
     
     steps:
-      - name: Checkout fork repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Fetch upstream tags and changelogs
-        run: |
-          # Add upstream remote
-          git remote add upstream https://github.com/AstrBotDevs/AstrBot.git
-          git fetch upstream --tags
-          git fetch upstream master
-
-      - name: Sync tags based on changelogs
+      - name: Get upstream changelogs
+        id: upstream
         run: |
           # Get all changelog files from upstream
-          curl -s "https://api.github.com/repos/AstrBotDevs/AstrBot/contents/changelogs" | \
-            jq -r '.[].name | select(. | endswith(".md")) | rtrimstr(".md")' > /tmp/upstream_versions.txt
+          versions=$(curl -s "https://api.github.com/repos/AstrBotDevs/AstrBot/contents/changelogs" | \
+            jq -r '.[].name | select(. | endswith(".md")) | rtrimstr(".md")' | sort -V)
           
-          echo "Upstream versions found:"
-          cat /tmp/upstream_versions.txt
+          echo "Upstream versions:"
+          echo "$versions"
           
-          # Get existing tags in fork
-          git tag -l > /tmp/fork_tags.txt
+          # Save to output
+          echo "versions<<EOF" >> $GITHUB_OUTPUT
+          echo "$versions" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Get existing tags in fork
+        id: fork
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get existing tags
+          tags=$(gh api repos/${{ github.repository }}/tags --jq '.[].name' | sort -V)
           
-          echo ""
           echo "Fork existing tags:"
-          cat /tmp/fork_tags.txt
+          echo "$tags"
+          
+          # Save to output
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          echo "$tags" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create missing tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          upstream_versions="${{ steps.upstream.outputs.versions }}"
+          fork_tags="${{ steps.fork.outputs.tags }}"
           
           # Find missing tags
-          missing_tags=""
-          while read version; do
-            if ! grep -q "^${version}$" /tmp/fork_tags.txt; then
-              missing_tags="${missing_tags} ${version}"
+          missing=""
+          for version in $upstream_versions; do
+            if ! echo "$fork_tags" | grep -q "^${version}$"; then
+              missing="$missing $version"
             fi
-          done < /tmp/upstream_versions.txt
-          
-          echo ""
-          echo "Missing tags: ${missing_tags}"
-          
-          # Create missing tags
-          for tag in ${missing_tags}; do
-            echo "Creating tag: ${tag}"
-            
-            # Find the commit that added the changelog file
-            # First try to find in upstream
-            commit=$(git log upstream/master --all --oneline -- "changelogs/${tag}.md" | head -1 | awk '{print $1}')
-            
-            if [ -z "$commit" ]; then
-              echo "  Warning: Could not find commit for ${tag}, using upstream/master"
-              commit="upstream/master"
-            fi
-            
-            echo "  Tagging commit: ${commit}"
-            git tag -a "${tag}" "${commit}" -m "Sync ${tag} from upstream" || echo "  Tag ${tag} already exists or failed"
           done
           
-          # Push all tags
-          echo ""
-          echo "Pushing tags to fork..."
-          git push origin --tags
+          if [ -z "$missing" ]; then
+            echo "No missing tags to create."
+            echo "created=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Missing tags to create:$missing"
+          
+          # Create each missing tag
+          created=0
+          for tag in $missing; do
+            echo "Creating tag: $tag"
+            
+            # Get the commit SHA for this tag from upstream
+            upstream_tag=$(gh api repos/AstrBotDevs/AstrBot/git/refs/tags/$tag --jq '.object.sha' 2>/dev/null || echo "")
+            
+            if [ -n "$upstream_tag" ]; then
+              # Tag exists in upstream, use the same commit
+              commit_sha="$upstream_tag"
+              echo "  Found upstream tag $tag -> $commit_sha"
+            else
+              # Tag not in upstream, find commit that added the changelog
+              commit_sha=$(gh api repos/AstrBotDevs/AstrBot/commits --paginate --jq ".[] | select(.files[].filename == \"changelogs/${tag}.md\") | .sha" 2>/dev/null | head -1)
+              
+              if [ -z "$commit_sha" ]; then
+                echo "  Warning: Could not find commit for $tag, skipping"
+                continue
+              fi
+              echo "  Found commit for changelog $tag -> $commit_sha"
+            fi
+            
+            # Create tag in fork using GitHub API
+            # First create tag object
+            tag_response=$(gh api repos/${{ github.repository }}/git/tags \
+              -F tag="$tag" \
+              -F message="Sync $tag from upstream" \
+              -F object="$commit_sha" \
+              -F type="commit" 2>/dev/null)
+            
+            if [ $? -ne 0 ] || [ -z "$tag_response" ]; then
+              echo "  Failed to create tag object for $tag"
+              continue
+            fi
+            
+            tag_sha=$(echo "$tag_response" | jq -r '.sha')
+            
+            # Create reference
+            ref_response=$(gh api repos/${{ github.repository }}/git/refs \
+              -F ref="refs/tags/$tag" \
+              -F sha="$tag_sha" 2>/dev/null)
+            
+            if [ $? -eq 0 ]; then
+              echo "  Successfully created tag $tag"
+              created=$((created + 1))
+            else
+              echo "  Failed to create ref for $tag (may already exist)"
+            fi
+          done
+          
+          echo "created=$created" >> $GITHUB_OUTPUT
+          echo "Total tags created: $created"
 
       - name: Summary
         run: |
           echo "## Tag Sync Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Checked upstream changelogs and synced missing tags." >> $GITHUB_STEP_SUMMARY
+          echo "- **Upstream versions checked:** $(echo '${{ steps.upstream.outputs.versions }}' | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Fork existing tags:** $(echo '${{ steps.fork.outputs.tags }}' | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tags created this run:** ${{ steps.create.outputs.created }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Tags in fork after sync:" >> $GITHUB_STEP_SUMMARY
-          git tag -l | sort -V | tail -20 >> $GITHUB_STEP_SUMMARY
+          echo "### Latest tags in fork:" >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.fork.outputs.tags }}' | tail -10 >> $GITHUB_STEP_SUMMARY
