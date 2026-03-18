@@ -45,6 +45,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create missing tags
+        id: create
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -93,28 +94,41 @@ jobs:
             # Create tag in fork using GitHub API
             # First create tag object
             tag_response=$(gh api repos/${{ github.repository }}/git/tags \
-              -F tag="$tag" \
-              -F message="Sync $tag from upstream" \
-              -F object="$commit_sha" \
-              -F type="commit" 2>/dev/null)
+              -f tag="$tag" \
+              -f message="Sync $tag from upstream" \
+              -f object="$commit_sha" \
+              -f type="commit" 2>&1)
             
-            if [ $? -ne 0 ] || [ -z "$tag_response" ]; then
+            tag_exit_code=$?
+            
+            if [ $tag_exit_code -ne 0 ] || [ -z "$tag_response" ] || echo "$tag_response" | grep -q '"message"'; then
               echo "  Failed to create tag object for $tag"
+              echo "  Response: $tag_response"
               continue
             fi
             
             tag_sha=$(echo "$tag_response" | jq -r '.sha')
             
+            if [ -z "$tag_sha" ] || [ "$tag_sha" = "null" ]; then
+              echo "  Failed to get tag SHA for $tag"
+              continue
+            fi
+            
+            echo "  Created tag object: $tag_sha"
+            
             # Create reference
             ref_response=$(gh api repos/${{ github.repository }}/git/refs \
-              -F ref="refs/tags/$tag" \
-              -F sha="$tag_sha" 2>/dev/null)
+              -f ref="refs/tags/$tag" \
+              -f sha="$tag_sha" 2>&1)
             
-            if [ $? -eq 0 ]; then
+            ref_exit_code=$?
+            
+            if [ $ref_exit_code -eq 0 ]; then
               echo "  Successfully created tag $tag"
               created=$((created + 1))
             else
-              echo "  Failed to create ref for $tag (may already exist)"
+              echo "  Failed to create ref for $tag"
+              echo "  Response: $ref_response"
             fi
           done
           
