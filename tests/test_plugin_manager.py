@@ -37,6 +37,9 @@ def _write_local_test_plugin(plugin_path: Path, repo_url: str):
     }
     with open(plugin_path / "info.yaml", "w", encoding="utf-8") as f:
         yaml.dump(metadata, f)
+    # metadata.yaml is required by _get_plugin_dir_name_from_metadata
+    with open(plugin_path / "metadata.yaml", "w", encoding="utf-8") as f:
+        yaml.dump({"contact": TEST_PLUGIN_NAME}, f)
     with open(plugin_path / "main.py", "w", encoding="utf-8") as f:
         f.write("from astrbot.api.star import Star, Context, StarManager\n")
         f.write("@StarManager.register\n")
@@ -435,7 +438,7 @@ async def test_ensure_plugin_requirements_logs_requirements_file_install_for_mis
         TEST_PLUGIN_DIR,
     )
 
-    assert any("按 requirements.txt 安装" in line for line in logged_lines)
+    assert any("鎸?requirements.txt 瀹夎" in line for line in logged_lines)
 
 
 @pytest.mark.asyncio
@@ -682,4 +685,4 @@ async def test_ensure_plugin_requirements_does_not_mask_install_error_when_clean
             TEST_PLUGIN_DIR,
         )
 
-    assert any("删除临时插件依赖文件失败" in log for log in warning_logs)
+    assert any("鍒犻櫎涓存椂鎻掍欢渚濊禆鏂囦欢澶辫触" in log for log in warning_logs)
